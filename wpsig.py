@@ -435,7 +435,6 @@ class WpsScanner(object):
             bssid = self.__getAddressFromList(management.get_bssid())
             essid = str(beacon.get_ssid())
             vendor = get_vendor(bssid)
-            # vendor = self.oui.get_vendor(bssid)
 
             if bssid not in self.ap_dict:
                 self.ap_dict[bssid] = {'essid': essid, 'channel': channel, 'clients': [], 'vendor': vendor}
@@ -451,7 +450,6 @@ class WpsScanner(object):
             # print(str(exc_info()))
             return None
 
-    # Probe requests from clients
     def handle_probe_req(self, pkt):
         if pkt.haslayer(Dot11ProbeReq) and '\x00' not in pkt[Dot11ProbeReq].info:
             essid = pkt[Dot11ProbeReq].info
@@ -489,10 +487,10 @@ class WpsScanner(object):
                 rt = self.rtDecoder.get_protocol(dot11.RadioTap)
                 channel = rt.get_channel()[0]
                 self.ap_dict[bssid] = {'essid': essid, 'channel': channel, 'clients': [],
-                                       'vendor': self.oui.get_vendor(bssid)}
+                                       'vendor': get_vendor(bssid)}
                 vendorIEs = probe.get_vendor_specific()
                 if self.wps_parser.has_wps(vendorIEs):
-                    vendor = self.oui.get_vendor(bssid)
+                    vendor = get_vendor(bssid)
                     wpsInfo = self.wps_parser.parse_wps(vendorIEs)
                     return [bssid, essid, vendor, wpsInfo]
         except Exception:
@@ -566,7 +564,7 @@ class WpsScanner(object):
             print("Enabling monitor interface on " + self.interface)
             self.set_monitor()
 
-        # Startinf to sniffe
+        # Startinf to sniffer
         print("Press Ctrl+C to stop. Sniffing...")
         print("-" * 80)
         while True:
