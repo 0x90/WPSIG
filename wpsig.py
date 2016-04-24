@@ -42,7 +42,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import RandMAC, sendp
 from scapy.layers.dot11 import RadioTap
 from scapy.all import sniff
-from scapy.layers.dot11 import Dot11, Dot11ProbeReq, Dot11Elt
+from scapy.layers.dot11 import Dot11, Dot11ProbeReq, Dot11Beacon, Dot11Elt
 from impacket import dot11
 from impacket.ImpactDecoder import RadioTapDecoder
 import netaddr
@@ -340,19 +340,16 @@ class WpsScanner(object):
         self.interface = args.interface
         self.macAddress = args.source if is_valid_mac_address(args.source) else None
         self.filename = args.write
-        self.wps_parser = WPSParser()
+        #
         self.captured = []
         self.channel = None
-        # self.iw.set_monitor()
         self.ap_dict = {}
         self.clients_dict = {}
+        #
         self.rtDecoder = RadioTapDecoder()
+        self.wps_parser = WPSParser()
 
-    def iwconfig_set_channel(self, channel):
-        cmd = 'iwconfig %s channel %s' % (self.interface, channel)
-        return subprocess.Popen(cmd, shell=True).communicate()
-
-    def set_monitor(self):
+    def enable_monitor(self):
         return subprocess.Popen('ifconfig %s down && iw %s set type monitor && ifconfig %s up' %
                                 (self.interface, self.interface, self.interface), shell=True).communicate()
 
@@ -369,7 +366,8 @@ class WpsScanner(object):
         return subprocess.Popen(cmd, shell=True).communicate()
 
     def signal_handler(self, frame, code):
-        print("Ctrl+C caught. Exiting..")
+        print("Ctrl+C caught. Exiting...")
+        # TODO: add writing to pcap file
         sys.exit(-1)
 
     def __getAddressFromList(self, bytes_list):
@@ -405,6 +403,7 @@ class WpsScanner(object):
             # Process Beacons and inject Probe Requests only when not passive
             if beacon is not None:
                 self.handle_beacon(data)
+
             elif probe is not None:
                 info = self.handle_probe_response(data)
                 if info:
@@ -415,8 +414,7 @@ class WpsScanner(object):
                         result += "  * %s: %s\n" % (key, repr(value))
                     result += "-" * 80 + "\n"
                     return result
-            elif pkt.haslayer(Dot11ProbeReq):
-                self.handle_probe_req(pkt)
+
         except Exception as e:
             return None
 
@@ -449,26 +447,6 @@ class WpsScanner(object):
             # print('Error while parsing beacon')
             # print(str(exc_info()))
             return None
-
-    def handle_probe_req(self, pkt):
-        if pkt.haslayer(Dot11ProbeReq) and '\x00' not in pkt[Dot11ProbeReq].info:
-            essid = pkt[Dot11ProbeReq].info
-        else:
-            essid = 'Hidden SSID'
-        client = pkt[Dot11].addr2
-
-        # if client in self.whitelist or essid in self.whitelist:
-        #     TODO: add logging
-        #     return
-
-        # New client
-        if client not in self.clients_dict:
-            self.clients_dict[client] = []
-            print(Fore.GREEN + '[!] New client:  %s ' % client)
-
-        if essid not in self.clients_dict[client]:
-            self.clients_dict[client].append(essid)
-            print(Fore.GREEN + '[+] New ProbeRequest: from %s to %s' % (client, essid))
 
     def handle_probe_response(self, pkt):
         """Process 802.11 Probe Response Frame for WPS IE."""
@@ -562,7 +540,7 @@ class WpsScanner(object):
         # Enable monitor
         if 'mon' not in self.interface:
             print("Enabling monitor interface on " + self.interface)
-            self.set_monitor()
+            self.enable_monitor()
 
         # Startinf to sniffer
         print("Press Ctrl+C to stop. Sniffing...")
