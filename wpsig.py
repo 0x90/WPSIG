@@ -3,6 +3,7 @@
 #
 # WPSIG - WiFi Protected Setup Information Gathering
 #    Copyright (C) 2013  Core Security Technologies
+#    Copyright (C) 2015, 2016 Oleg Kupreev
 #
 #    This file is part of WPSIG.
 #
@@ -11,7 +12,7 @@
 #    the Free Software Foundation, either version 3 of the License, or
 #    (at your option) any later version.
 #
-#    WPSIG is distributed in the hope that it will be useful,
+#    WPSIG is distributed in the hope that it will /home/nop/.pyenv/versions/wpsig/bin/be useful,
 #    but WITHOUT ANY WARRANTY; without even the implied warranty of
 #    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #    GNU General Public License for more details.
@@ -23,74 +24,43 @@
 #
 #        ablanco [at coresecurity.com]
 #        oss     [at coresecurity.com]
+#        Oleg Kupreev <oleg.kupreev@gmail.com>
 
-from os import path, geteuid
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
-from struct import pack, unpack
-from re import compile
-from datetime import datetime
-from random import randint
-from sys import exit, exc_info
-from subprocess import Popen, PIPE
+import argparse
+import logging
+import os
+import sys
+import re
+import random
 import signal
+import struct
+import subprocess
 
-from colorama import Fore, Back
-
-from scapy.all import sniff, hexdump, RandMAC, sendp
-from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeResp, Dot11ReassoResp, Raw, Dot11ProbeReq, RadioTap, Dot11Elt
-
-def showMissingLibraryMsg(libraryName, isError=True):
-    msgType = "ERROR" if isError else "WARNING"
-    print("%s: unable to find %s library." % (msgType, libraryName))
-    if isError:
-        print("Exiting...")
-        exit(-1)
-
-# impacket
-try:
-    from impacket import dot11
-    from impacket.ImpactDecoder import RadioTapDecoder
-except ImportError:
-    showMissingLibraryMsg("impacket")
+# external dependencies
+from colorama import Fore
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+from scapy.all import RandMAC, sendp
+from scapy.layers.dot11 import RadioTap
+from scapy.all import sniff
+from scapy.layers.dot11 import Dot11, Dot11ProbeReq, Dot11Elt
+from impacket import dot11
+from impacket.ImpactDecoder import RadioTapDecoder
+import netaddr
 
 
-def isValidMacAddress(address):
+def is_valid_mac_address(address):
     "Return True if it is a valid mac address."
     if address is None:
         return False
-    macAddress = compile("^((?:[0-9a-fA-F]{2}[:]){5}[0-9a-fA-F]{2})$")
-    if not macAddress.match(address):
-        # raise Exception("Invalid MAC Address")
-        return False
-    return True
+    macAddress = re.compile("^((?:[0-9a-fA-F]{2}[:]){5}[0-9a-fA-F]{2})$")
+    return macAddress.match(address)
 
 
-class OUI(object):
-
-    def __init__(self, db="oui.txt"):
-        self.lines = open(db).read().split('\n')
-
-    def get_vendor(self, address):
-        "Return Vendor string for a MAC address using oui.txt."
-        unknownVendor = "<Unknown Vendor>"
-        macAddressRegex = "^((?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2})$"
-        ouiLineRegex = "^\s*((?:[0-9A-F]{2}[-]){2}[0-9A-F]{2})\s+\(hex\)\s+(.*)$"
-        macAddress = compile(macAddressRegex)
-        ouiLine = compile(ouiLineRegex)
-        if not macAddress.match(address):
-            raise Exception("Invalid MAC Address")
-
-        address = address.upper()
-        address = "-".join(address.split(":")[:3]) if ':' in address else "-".join(address.split("-")[:3])
-
-        for line in self.lines:
-            match = ouiLine.match(line)
-            if match:
-                addr, vendor = match.groups()
-                if address == addr:
-                    return vendor
-
-        return unknownVendor
+def get_vendor(addr):
+    try:
+        return netaddr.OUI(addr[:8].replace(':', '-')).registration().org
+    except netaddr.core.NotRegisteredError:
+        return 'UNKNOW'
 
 
 class WPSParser(object):
@@ -197,9 +167,9 @@ class WPSParser(object):
 
             dataLength = len(data)
             while (offset < dataLength):
-                tagType = unpack("!H", data[offset:offset + 2])[0]
+                tagType = struct.unpack("!H", data[offset:offset + 2])[0]
                 offset += 2
-                tagLen = unpack("!H", data[offset:offset + 2])[0]
+                tagLen = struct.unpack("!H", data[offset:offset + 2])[0]
                 offset += 2
                 tagData = data[offset:offset + tagLen]
                 offset += tagLen
@@ -237,8 +207,8 @@ class WPSParser(object):
                         tagData = '<unkwon>'
 
                 if tagType == "Primary Device Type":
-                    category = unpack("!H", tagData[0:2])[0]
-                    subCategory = unpack("!H", tagData[6:8])[0]
+                    category = struct.unpack("!H", tagData[0:2])[0]
+                    subCategory = struct.unpack("!H", tagData[6:8])[0]
                     if category == 1:
                         category = "Computer"
                         if subCategory == 1:
@@ -324,7 +294,7 @@ class WPSParser(object):
                     tagData = "%s - %s" % (category, subCategory)
 
                     if tagType == "Version":
-                        tagData = unpack("B", tagData)[0]
+                        tagData = struct.unpack("B", tagData)[0]
                         major = tagData >> 4
                         minor = tagData & 0x0F
                         tagData = "%d.%d" % (major, minor)
@@ -342,7 +312,7 @@ class WPSParser(object):
                             0x0100: "Keypad"
                         }
                         result = []
-                        tagData = unpack("!H", tagData)[0]
+                        tagData = struct.unpack("!H", tagData)[0]
                         for key, value in methods.items():
                             if key & tagData:
                                 result.append(value)
@@ -363,26 +333,32 @@ class WPSParser(object):
         return False
 
 
-class IW(object):
-
-    def __init__(self, iface):
-        self.iface = iface
+class WpsScanner(object):
+    def __init__(self, args):
+        self.args = args
+        self.accessPoints = []
+        self.interface = args.interface
+        self.macAddress = args.source if is_valid_mac_address(args.source) else None
+        self.filename = args.write
+        self.wps_parser = WPSParser()
+        self.captured = []
         self.channel = None
+        # self.iw.set_monitor()
+        self.ap_dict = {}
+        self.clients_dict = {}
+        self.rtDecoder = RadioTapDecoder()
 
     def iwconfig_set_channel(self, channel):
-        cmd = 'iwconfig %s channel %s' % (self.iface, channel)
-        return Popen(cmd, shell=True).communicate()
+        cmd = 'iwconfig %s channel %s' % (self.interface, channel)
+        return subprocess.Popen(cmd, shell=True).communicate()
 
     def set_monitor(self):
-        return Popen('iw %s set type monitor && ifconfig %s up' % (self.iface, self.iface), shell=True).communicate()
+        return subprocess.Popen('ifconfig %s down && iw %s set type monitor && ifconfig %s up' %
+                                (self.interface, self.interface, self.interface), shell=True).communicate()
 
     def set_channel(self, channel, width=None):
-        # iw phy <phyname> set channel <channel> [HT20|HT40+|HT40-]
-        # iw dev <devname> set channel <channel> [HT20|HT40+|HT40-]
-        # channel=
-        cmd = 'iw %s set channel %s ' % (self.iface, channel)
-        self.channel=channel
-        # print(cmd)
+        cmd = 'iw %s set channel %s ' % (self.interface, channel)
+        self.channel = channel
         if width is not None:
             if width == 20:
                 cmd += 'HT20'
@@ -390,29 +366,11 @@ class IW(object):
                 cmd += 'HT40+'
             elif width == -40:
                 cmd += 'HT40-'
-        return Popen(cmd, shell=True).communicate()
-
-
-class WpsScanner(object):
-
-    def __init__(self, args):
-        self.args = args
-        self.accessPoints = []
-        self.interface = args.interface
-        self.macAddress = args.source if isValidMacAddress(args.source) else None
-        self.filename = args.write
-        self.wps_parser = WPSParser()
-        self.oui = OUI()
-        self.captured = []
-        self.iw = IW(self.args.interface)
-        self.iw.set_monitor()
-        self.ap_dict = {}
-        self.clients_dict = {}
-        self.rtDecoder = RadioTapDecoder()
+        return subprocess.Popen(cmd, shell=True).communicate()
 
     def signal_handler(self, frame, code):
         print("Ctrl+C caught. Exiting..")
-        exit(-1)
+        sys.exit(-1)
 
     def __getAddressFromList(self, bytes_list):
         "Return a string of a MAC address on a bytes list."
@@ -460,11 +418,7 @@ class WpsScanner(object):
             elif pkt.haslayer(Dot11ProbeReq):
                 self.handle_probe_req(pkt)
         except Exception as e:
-            # print('Error while processing packet')
-            # print(str(exc_info()))
             return None
-
-
 
     def handle_beacon(self, pkt):
         """Process 802.11 Beacon Frame for WPS IE."""
@@ -472,7 +426,7 @@ class WpsScanner(object):
             self.rtDecoder.decode(pkt)
             rt = self.rtDecoder.get_protocol(dot11.RadioTap)
             channel = rt.get_channel()[0]
-            flags= rt.get_flags()
+            flags = rt.get_flags()
             tsft = rt.get_tsft()
             rate = rt.get_rate()
 
@@ -480,15 +434,17 @@ class WpsScanner(object):
             beacon = self.rtDecoder.get_protocol(dot11.Dot11ManagementBeacon)
             bssid = self.__getAddressFromList(management.get_bssid())
             essid = str(beacon.get_ssid())
-            vendor = self.oui.get_vendor(bssid)
+            vendor = get_vendor(bssid)
+            # vendor = self.oui.get_vendor(bssid)
 
             if bssid not in self.ap_dict:
-                self.ap_dict[bssid] ={'essid':essid, 'channel':channel, 'clients':[],'vendor':vendor}
-                print(Fore.GREEN+'[+] New AP [%s] [%s] at %s vendor:%s TSFT: %s RATE: %s FLAGS: %s' % (bssid, essid, channel, vendor, tsft, rate,flags))
+                self.ap_dict[bssid] = {'essid': essid, 'channel': channel, 'clients': [], 'vendor': vendor}
+                print(Fore.GREEN + '[+] New AP [%s] [%s] at %s vendor:%s TSFT: %s RATE: %s FLAGS: %s' % (
+                bssid, essid, channel, vendor, tsft, rate, flags))
             # ACTIVE MODE
             if self.accessPoints.count(bssid) == 0 and self.wps_parser.has_wps(beacon.get_vendor_specific()):
                 # TODO: add injection
-                self.send_probe_req(essid, bssid,)
+                self.send_probe_req(essid, bssid, )
 
         except Exception as e:
             # print('Error while parsing beacon')
@@ -510,11 +466,11 @@ class WpsScanner(object):
         # New client
         if client not in self.clients_dict:
             self.clients_dict[client] = []
-            print(Fore.GREEN+'[!] New client:  %s ' % client)
+            print(Fore.GREEN + '[!] New client:  %s ' % client)
 
         if essid not in self.clients_dict[client]:
             self.clients_dict[client].append(essid)
-            print(Fore.GREEN+'[+] New ProbeRequest: from %s to %s' % (client, essid))
+            print(Fore.GREEN + '[+] New ProbeRequest: from %s to %s' % (client, essid))
 
     def handle_probe_response(self, pkt):
         """Process 802.11 Probe Response Frame for WPS IE."""
@@ -532,7 +488,8 @@ class WpsScanner(object):
                 self.rtDecoder.decode(pkt)
                 rt = self.rtDecoder.get_protocol(dot11.RadioTap)
                 channel = rt.get_channel()[0]
-                self.ap_dict[bssid] = {'essid':essid, 'channel':channel, 'clients':[],'vendor':self.oui.get_vendor(bssid)}
+                self.ap_dict[bssid] = {'essid': essid, 'channel': channel, 'clients': [],
+                                       'vendor': self.oui.get_vendor(bssid)}
                 vendorIEs = probe.get_vendor_specific()
                 if self.wps_parser.has_wps(vendorIEs):
                     vendor = self.oui.get_vendor(bssid)
@@ -551,11 +508,11 @@ class WpsScanner(object):
         print('[!] Sending 802.11 Probe Request: SRC=[%s] -> BSSID=[%s]\t(%s)' % (src, bssid, essid))
 
         param = Dot11ProbeReq()
-        essid = Dot11Elt(ID='SSID',info=essid)
-        rates = Dot11Elt(ID='Rates',info="\x03\x12\x96\x18\x24\x30\x48\x60")
-        dsset = Dot11Elt(ID='DSset',info='\x01')
-        pkt = RadioTap()\
-        /Dot11(type=0, subtype=4, addr1=bssid, addr2=src, addr3=bssid)/param/essid/rates/dsset
+        essid = Dot11Elt(ID='SSID', info=essid)
+        rates = Dot11Elt(ID='Rates', info="\x03\x12\x96\x18\x24\x30\x48\x60")
+        dsset = Dot11Elt(ID='DSset', info='\x01')
+        pkt = RadioTap() \
+              / Dot11(type=0, subtype=4, addr1=bssid, addr2=src, addr3=bssid) / param / essid / rates / dsset
 
         try:
             sendp(pkt, verbose=0)
@@ -578,7 +535,7 @@ class WpsScanner(object):
         frameControl.set_protectedFrame(0)
         frameControl.set_order(0)
         # Management Frame
-        sequence = randint(0, 4096)
+        sequence = random.randint(0, 4096)
         broadcast = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
         mngtFrame = dot11.Dot11ManagementFrame()
         mngtFrame.set_duration(0)
@@ -601,18 +558,29 @@ class WpsScanner(object):
         return sendp(frameControl.get_packet(), iface=self.args.interface, verbose=0)
 
     def start(self, timeout=10):
+        # Set signal handler
         signal.signal(signal.SIGINT, self.signal_handler)
+
+        # Enable monitor
+        if 'mon' not in self.interface:
+            print("Enabling monitor interface on " + self.interface)
+            self.set_monitor()
+
+        # Startinf to sniffe
         print("Press Ctrl+C to stop. Sniffing...")
         print("-" * 80)
         while True:
-            for x in [1,6,11,1,3,5,9,13]:
-                print(Fore.YELLOW+"[*] Switching channel to: %i" % x)
-                self.iw.set_channel(x)
-                self.captured.append(sniff(iface=self.interface, prn=self._packet_handler, lfilter=self._packet_filter, store=1, timeout=timeout))
+            for x in [1, 6, 11, 1, 3, 5, 9, 13]:
+                print(Fore.YELLOW + "[*] Switching channel to: %i" % x)
+                self.set_channel(x)
+                self.captured.extend(
+                    sniff(iface=self.interface, prn=self._packet_handler, lfilter=self._packet_filter, store=1,
+                          timeout=timeout))
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser('wpsik', description='Wi-Fi Protected Setup Information Gathering.', formatter_class=ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser('WPSIG', description='Wi-Fi Protected Setup Information Gathering.',
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     group = parser.add_argument_group('I/O options')
     group.add_argument("-i", "--interface", help="network interface.")
     group.add_argument("-w", "--write", help="output filename.")
@@ -621,9 +589,9 @@ if __name__ == "__main__":
     group.add_argument("-s", "--source", help="source mac address.")
     args = parser.parse_args()
 
-    if geteuid() != 0:
+    if os.geteuid() != 0:
         print("ERROR: root privileges are required.")
-        exit(-1)
+        sys.exit(-1)
 
     ws = WpsScanner(args)
     ws.start()
